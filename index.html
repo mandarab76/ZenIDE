@@ -137,7 +137,7 @@
   <!-- Monaco Editor -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs/loader.min.js"></script>
   <script>
-    window.MonacoEnvironment = { getWorkerUrl: () => `text/javascript;charset=utf-8,${encodeURIComponent(`
+    window.MonacoEnvironment = { getWorkerUrl: () => `data:text/javascript;charset=utf-8,${encodeURIComponent(`
       self.MonacoEnvironment = { baseUrl: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/' };
       importScripts('https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs/base/worker/workerMain.min.js');
     `)} };
@@ -400,4 +400,4 @@
     window.addEventListener('resize', () => fitAddon?.fit());
   </script>
 </body>
-  </html>
+</html>
