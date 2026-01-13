@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZenIDE</title>
+  <meta name="description" content="A clutter-free, tab-based web IDE that runs entirely in-browser.">
+  <meta name="theme-color" content="#1e1e1e" />
+  
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="data:application/manifest+json,{
+    %22name%22:%22ZenIDE%22,
+    %22short_name%22:%22ZenIDE%22,
+    %22start_url%22:%22./%22,
+    %22display%22:%22standalone%22,
+    %22background_color%22:%22%23000000%22,
+    %22theme_color%22:%22%231e1e1e%22,
+    %22icons%22:[{
+      %22src%22:%22data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='192' height='192' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' fill='%231e1e1e'/%3E%3Ccircle cx='96' cy='96' r='56' fill='%234d7fff'/%3E%3C/svg%3E%22,
+      %22sizes%22:%22192x192%22,
+      %22type%22:%22image/svg+xml%22
+    }]
+  }">
+
+  <!-- Shoelace -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.0/cdn/themes/dark.css" />
+  <script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.0/cdn/shoelace-autoloader.js"></script>
+
+  <!-- 🔥 CRITICAL: MONACO CSS (MUST BE LOADED) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/editor/editor.main.css" />
+
+  <style>
+    :root { --sl-panel-background-color: #1e1e1e; }
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    #app { height: 100%; display: flex; flex-direction: column; }
+    .toolbar {
+      display: flex;
+      padding: 8px 12px;
+      background: #252526;
+      gap: 8px;
+      border-bottom: 1px solid #3c3c3c;
+    }
+    .tab-bar { 
+      display: flex; 
+      background: #252526; 
+      padding: 0 8px; 
+      gap: 4px; 
+      overflow-x: auto;
+    }
+    .tab { 
+      padding: 8px 12px; 
+      cursor: pointer; 
+      border-radius: 4px; 
+      white-space: nowrap;
+      font-size: 14px;
+    }
+    .tab.active { background: #3c3c3c; }
+    .content { flex: 1; position: relative; }
+    .panel { display: none; width: 100%; height: 100%; }
+    .panel.active { display: block; }
+    .activity-strip {
+      display: flex;
+      background: #000;
+      padding: 4px 8px;
+      gap: 12px;
+      font-size: 12px;
+      overflow-x: auto;
+    }
+    .activity-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: #2a2a2a;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .notification {
+      position: fixed;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #333;
+      color: white;
+      padding: 12px 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      z-index: 1000;
+      display: none;
+    }
+    #terminal-container, #ai-content { width: 100%; height: 100%; padding: 12px; box-sizing: border-box; }
+    #problems-list { padding: 12px; max-height: 100%; overflow-y: auto; }
+    .problem-item { 
+      padding: 6px 0; 
+      border-bottom: 1px solid #333; 
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="toolbar">
+      <sl-button size="small" id="openBtn">📂 Open</sl-button>
+      <sl-button size="small" id="saveBtn">💾 Save</sl-button>
+      <sl-button size="small" id="newBtn">📄 New</sl-button>
+      <div style="flex:1"></div>
+      <sl-input placeholder="Command..." style="--sl-input-background-color: #2d2d30;"></sl-input>
+    </div>
+
+    <div class="tab-bar" id="tabBar"></div>
+
+    <div class="content">
+      <div id="editorPanel" class="panel">Loading editor...</div>
+      <div id="terminalPanel" class="panel">
+        <div id="terminal-container"></div>
+      </div>
+      <div id="aiChatPanel" class="panel">
+        <div id="ai-content">AI Assistant ready.</div>
+      </div>
+      <div id="problemsPanel" class="panel">
+        <div id="problems-list">No errors</div>
+      </div>
+    </div>
+
+    <div class="activity-strip" id="activityStrip"></div>
+
+    <div class="notification" id="notification">
+      <span id="notifMessage"></span>
+      <sl-button size="small" id="notifBtn" style="margin-left: 10px;">OK</sl-button>
+    </div>
+  </div>
+
+  <!-- Xterm.js -->
+  <script src="https://unpkg.com/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/xterm@5.5.0/css/xterm.css" />
+
+  <!-- 🔥 MONACO SETUP (CORRECT ORDER) -->
+  <script>
+    // MUST be defined BEFORE loading loader.js
+    window.MonacoEnvironment = {
+      getWorkerUrl: function (moduleId, label) {
+        if (label === 'editorWorkerService') {
+          return 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/editor/editor.worker.bundle.js';
+        }
+        if (['typescriptWorker', 'javascriptWorker'].includes(label)) {
+          return 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/language/typescript/ts.worker.bundle.js';
+        }
+        return 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/editor/editor.worker.bundle.js';
+      }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr..net/npm/monaco-editor@0.52.2/min/vs/loader.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/editor/editor.main.nls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/editor/editor.main.js"></script>
+
+  <script>
+    // ===== APP CODE (same as before, but now Monaco will WORK) =====
+    const tabs = [
+      { id: 'editor', title: 'Editor', type: 'editor' },
+      { id: 'terminal', title: 'Terminal', type: 'terminal' },
+      { id: 'ai', title: 'AI Chat', type: 'ai' },
+      { id: 'problems', title: 'Problems', type: 'problems' }
+    ];
+    let activeTab = 'editor';
+    let currentFileHandle = null;
+    let currentFileName = 'Untitled-1.py';
+    const tabStatus = {
+      terminal: 'Ready',
+      ai: 'Listening...',
+      problems: '0 issues'
+    };
+
+    const tabBar = document.getElementById('tabBar');
+    const activityStrip = document.getElementById('activityStrip');
+    const notification = document.getElementById('notification');
+    const notifMessage = document.getElementById('notifMessage');
+    const notifBtn = document.getElementById('notifBtn');
+
+    async function openFile() {
+      if ('showOpenFilePicker' in window) {
+        try {
+          [currentFileHandle] = await window.showOpenFilePicker({
+            types: [{ accept: { 'text/python': ['.py'], 'text/javascript': ['.js'] } }]
+          });
+          const file = await currentFileHandle.getFile();
+          currentFileName = file.name;
+          editor.setValue(await file.text());
+          setLanguage(currentFileName);
+          updateContext();
+        } catch (e) {}
+      } else {
+        alert('Use Chrome/Edge for file access.');
+      }
+    }
+
+    async function saveFile() {
+      if (!currentFileHandle && 'showSaveFilePicker' in window) {
+        currentFileHandle = await window.showSaveFilePicker({
+          suggestedName: currentFileName,
+          types: [{ accept: { [currentFileName.endsWith('.js') ? 'text/javascript' : 'text/python']: [currentFileName.slice(-3)] } }]
+        });
+      }
+      if (currentFileHandle) {
+        const writable = await currentFileHandle.createWritable();
+        await writable.write(editor.getValue());
+        await writable.close();
+        showNotification(`Saved: ${currentFileName}`);
+      } else {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([editor.getValue()], { type: 'text/plain' }));
+        a.download = currentFileName;
+        a.click();
+      }
+    }
+
+    function newFile() {
+      const ext = prompt("Extension (.py/.js):", ".py") || ".py";
+      currentFileName = `untitled-${Date.now()}${ext}`;
+      editor.setValue(ext === '.js' ? 'console.log("Hello");' : 'print("Hello")');
+      setLanguage(currentFileName);
+      updateContext();
+    }
+
+    function setLanguage(name) {
+      const lang = name.endsWith('.js') ? 'javascript' : 'python';
+      monaco.editor.setModelLanguage(editor.getModel(), lang);
+      tabStatus.terminal = `Run: ${lang === 'javascript' ? 'node' : 'python'} ${name}`;
+    }
+
+    let editor;
+    require(['vs/editor/editor.main'], () => {
+      editor = monaco.editor.create(document.getElementById('editorPanel'), {
+        value: '# Welcome to ZenIDE\nprint("It works!")',
+        language: 'python',
+        theme: 'vs-dark',
+        minimap: { enabled: false },
+        automaticLayout: true,
+        fontSize: 14
+      });
+
+      editor.onDidChangeModelDecorations(() => {
+        const markers = monaco.editor.getModelMarkers({ resource: editor.getModel().uri });
+        const errors = markers.filter(m => m.severity === 8);
+        const warnings = markers.filter(m => m.severity === 4);
+        const total = errors.length + warnings.length;
+        tabStatus.problems = `${total} issue${total !== 1 ? 's' : ''}`;
+        
+        const list = document.getElementById('problems-list');
+        if (total === 0) {
+          list.innerHTML = '✅ No issues';
+        } else {
+          list.innerHTML = [...errors.map(e => `<div class="problem-item" style="color:#f14c4c">❌ ${e.message}</div>`),
+                             ...warnings.map(w => `<div class="problem-item" style="color:#d19a66">⚠️ ${w.message}</div>`)]
+                            .join('');
+        }
+        renderActivityStrip();
+      });
+
+      document.getElementById('editorPanel').textContent = '';
+      updateContext();
+    });
+
+    const term = new Terminal({ theme: { background: '#000', foreground: '#ddd' }, fontSize: 14 });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('terminal-container'));
+    fitAddon.fit();
+
+    function updateContext() {
+      tabs[0].title = currentFileName;
+      renderTabs();
+      document.getElementById('ai-content').textContent = `AI for ${currentFileName}`;
+      tabStatus.ai = 'Ask about code!';
+      tabStatus.problems = 'Analyzing...';
+      renderActivityStrip();
+    }
+
+    function renderTabs() {
+      tabBar.innerHTML = '';
+      tabs.forEach(tab => {
+        const el = document.createElement('div');
+        el.className = `tab ${activeTab === tab.id ? 'active' : ''}`;
+        el.textContent = tab.title;
+        el.onclick = () => switchTab(tab.id);
+        tabBar.appendChild(el);
+      });
+    }
+
+    function renderActivityStrip() {
+      activityStrip.innerHTML = '';
+      tabs.forEach(tab => {
+        if (tab.id !== activeTab && tabStatus[tab.id]) {
+          const item = document.createElement('div');
+          item.className = 'activity-item';
+          item.textContent = `${tab.title}: ${tabStatus[tab.id]}`;
+          if (tab.id === 'problems' && tabStatus.problems !== '0 issues' && !tabStatus.problems.includes('Analyzing')) {
+            item.style.background = '#442222';
+          }
+          item.onclick = () => switchTab(tab.id);
+          activityStrip.appendChild(item);
+        }
+      });
+    }
+
+    function switchTab(id) {
+      activeTab = id;
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.getElementById(id + 'Panel')?.classList.add('active');
+      renderTabs();
+      renderActivityStrip();
+    }
+
+    function showNotification(msg, cb) {
+      notifMessage.textContent = msg;
+      notifBtn.onclick = () => { notification.style.display = 'none'; cb?.(); };
+      notification.style.display = 'flex';
+      setTimeout(() => { notification.style.display = 'none'; }, 5000);
+    }
+
+    document.getElementById('openBtn').onclick = openFile;
+    document.getElementById('saveBtn').onclick = saveFile;
+    document.getElementById('newBtn').onclick = newFile;
+
+    renderTabs();
+    renderActivityStrip();
+    window.addEventListener('resize', () => fitAddon?.fit());
+  </script>
+</body>
+</html>
